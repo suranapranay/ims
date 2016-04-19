@@ -4,6 +4,9 @@ from ceph_wrapper import *
 import ConfigParser, os
 import subprocess
 import os.path
+import urlparse
+import requests
+import json
 
 #As of now a shell script that can accomodate rbd map and update.
 #Since there are no python rbd map and updates wrappers around ceph.
@@ -56,9 +59,11 @@ def call_shellscript(path, m_args):
 #Custom Exception Class that we are going to use which is a wrapper around
 #Ceph exception classes.
 class ResponseException(object):
-    def __init__(self, e):
+    def __init__(self, e, debug = False):
         self.exception_dict = dict()
         self.exception = e
+        if debug:
+            print self.exception
 # Extend this dict as needed for future expceptions. this
 # ensures readeability and uniformity of errors.
         self.exception_dict = {
@@ -70,6 +75,7 @@ class ResponseException(object):
            type(rbd.FunctionNotSupported()) : 410,
            type(rbd.ArgumentOutOfRange()) : 411,
            type(ShellScriptException()) : 440,
+           type(requests.exceptions.ConnectionError()) : 441,
                                 }
         #This is to handle key error exception, this also gives us the default error
         self.current_err = self.exception_dict.get(type(e), 500)
@@ -81,8 +87,6 @@ class ResponseException(object):
             #This is for debugging original exceptions, if we don't have this, 
             #we will always get internal error, so that end-user can't 
             #see original exceptions
-            if debug == True:
-                print e
             emsg = "Internal server error"
         return {'status_code' : self.current_err, 'msg' : emsg}
 
@@ -98,7 +102,7 @@ def provision(node_name, img_name = "hadoopMaster.img",\
         if fs_obj.clone(img_name.encode('utf-8'),\
                 snap_name.encode('utf-8'),\
                 node_name.encode("utf-8")):
-            iscsi_output = call_shellscript('iscsi_update.sh', \
+            iscsi_output = call_shellscript('./iscsi_update.sh', \
                                         [fsconfig.keyring, \
                                 fsconfig.rid, fsconfig.pool, node_name, 'create'])
             if 'successfully' in iscsi_output[0]:
@@ -116,7 +120,7 @@ def detach_node(node_name):
     try:
         fsconfig = create_fsconfigobj()
         fs_obj = init_fs(fsconfig)
-        iscsi_output = call_shellscript('iscsi_update.sh', \
+        iscsi_output = call_shellscript('./iscsi_update.sh', \
                                         [fsconfig.keyring, \
                                 fsconfig.rid, fsconfig.pool, node_name,\
                                 'delete'])
@@ -140,21 +144,46 @@ def create_snapshot(img_name, snap_name):
             a = ret_200(fs_obj.snap_image(img_name, snap_name))
             fs_obj.tear_down()
             return a
-
     except Exception as e:
         fs_obj.tear_down()
         return ResponseException(e).parse_curr_err()
 
+#Lists snapshot for the given image img_name 
+def list_snaps(img_name):
+    try:
+        fsconfig = create_fsconfigobj() 
+        fs_obj = init_fs(fsconfig)
+        if fs_obj.init_image(img_name):
+            a = ret_200(fs_obj.list_snapshots(img_name))
+            fs_obj.tear_down()
+            return a
+    except Exception as e:
+        fs_obj.tear_down()
+        return ResponseException(e).parse_curr_err()
+
+#Removes snapshot sna_name for the given image img_name
+def remove_snaps(img_name, snap_name):
+    try:
+        fsconfig = create_fsconfigobj() 
+        fs_obj = init_fs(fsconfig)
+        if fs_obj.init_image(img_name):
+            a = ret_200(fs_obj.remove_snapshots(img_name, snap_name))
+            fs_obj.tear_down()
+            return a
+    except Exception as e:
+        fs_obj.tear_down()
+        return ResponseException(e).parse_curr_err()
+
+
+
 #Lists the images for the project which includes the snapshot
-def list_all_images(debug = True):
-    
+def list_all_images(debug = False):
     try:
         fsconfig = create_fsconfigobj()
         fs_obj = init_fs(fsconfig)
         a = ret_200(fs_obj.list_n())
         fs_obj.tear_down()
         return a
-
     except Exception as e:
         return ResponseException(e).parse_curr_err()
 
@@ -173,7 +202,6 @@ def init_fs(fsconfig, debug = False):
              return RBD(fsconfig.rid,\
                     fsconfig.r_conf,\
                     fsconfig.pool, debug)
-           
     except Exception as e:
         return ResponseException(e).parse_curr_err()
 
@@ -182,4 +210,131 @@ def init_fs(fsconfig, debug = False):
 #we are creating.
 def ret_200(obj):
     return {"status_code" : 200, "retval" : obj}
-   
+
+
+###### haas business #####
+
+class HaasRequest(object):
+    def __init__(self, method, data):
+        self.method = method
+        self.data = json.dumps(data)
+    def __str__(self):
+        return str({"method" : str(self.method),\
+                "data" : self.data})
+
+def call_haas(url, req, debug = False):
+    ret = call_haas_inner(url, req)
+    return ret
+
+def call_haas_inner(url, req):
+    if req.method == 'get':
+        return requests.get(url)
+    if req.method == "post":
+            ret = requests.post(url, data=req.data)
+            return ret 
+
+def resp_parse(obj, resptype = 1):
+    if obj.status_code == 200 and resptype is 1:
+        return {"status_code" : obj.status_code, "retval" : obj.json()}
+
+    elif obj.status_code == 200 and resptype is not 1:
+        return {"status_code" : obj.status_code}
+
+    elif obj.status_code != 200:
+        return {"status_code" : obj.status_code}
+
+def list_free_nodes(haas_url, debug = None):
+    try:
+        api = 'free_nodes'
+        c_api = urlparse.urljoin(haas_url, api)
+        haas_req = HaasRequest('get', None)
+        if debug:
+            print c_api 
+        haas_call_ret = call_haas(c_api, haas_req)
+        return resp_parse(haas_call_ret)
+
+    except Exception as e:
+        return ResponseException(e).parse_curr_err()
+
+
+
+def query_project_nodes(haas_url, project):
+    api = '/nodes'
+    c_api = urlparse.urljoin(haas_url, '/project/' + project +  api)
+    haas_req = HaasRequest('get', None)
+    haas_call_ret = call_haas(c_api, haas_req)
+    return resp_parse(haas_call_ret)   
+
+ 
+def detach_node_from_project(haas_url, project, node, debug = None):
+    api = '/detach_node'
+    c_api = urlparse.urljoin(haas_url, 'project/' + project + api)
+    ret_net_obj = str()
+    body = {"node" : node}
+    haas_req = HaasRequest('post', body)
+    t_ret = call_haas(c_api, haas_req, debug)
+    if debug:
+        print {"url" : c_api, "node" : node}
+    return resp_parse(t_ret, resptype = 2)
+
+
+def attach_node_to_project_network(haas_url, node, nic,\
+        network, channel = "vlan/native",\
+        debug = None):
+    ret_obj = list()
+    api = '/node/' + node + '/nic/' + nic + '/connect_network'
+    c_api = urlparse.urljoin(haas_url, api)
+    print c_api
+    body = {"network" : network, "channel" : channel}
+    haas_req = HaasRequest('post', body)
+    t_ret= call_haas(c_api, haas_req, debug)
+    if debug:
+        print {"url" : c_api, "node" : node, "nic" : nic}
+    return resp_parse(t_ret, resptype = 2)
+
+def attach_node_haas_project(haas_url,project,node,\
+        debug = None):
+    api = '/connect_node'
+    c_api = urlparse.urljoin(haas_url, 'project/' + project + api)
+    ret_obj = list()
+    body = {"node" : node}
+    haas_req = HaasRequest('post', body)
+    t_ret = call_haas(c_api, haas_req, debug)
+    if debug:
+        print {"url" : c_api, "node" : node}
+    return resp_parse(t_ret, resptype = 2)
+
+def detach_node_from_project_network(haas_url, node,\
+        network, nic = 'enp130s0f0', debug = None,\):
+    ret_obj = list()
+    api = '/node/' + node + '/nic/' + nic + '/detach_network'
+    c_api = urlparse.urljoin(haas_url, api)
+    body = {"network" : network}
+    haas_req = HaasRequest('post', body)
+    t_ret = call_haas(c_api, haas_req, debug)
+    if debug:
+        print {"url" : c_api, "node" : node, "nic" : nic}
+    return resp_parse(t_ret, resptype = 2)
+
+def attach_node_to_project_network(haas_url, node, nic,\
+        network, channel = "vlan/native", debug = False):
+    ret_obj = list()
+    api = '/node/' + node + '/nic/' + nic + '/connect_network'
+    c_api = urlparse.urljoin(haas_url, api)
+    body = {"network" : network, "channel" : channel}
+    haas_req = HaasRequest('post', body)
+    t_ret = call_haas(c_api, haas_req, debug)
+    if debug:
+        print {"url" : c_api, "node" : node, "nic" : nic}
+    return resp_parse(t_ret, resptype = 2)
+
+
+if __name__ == "__main__":
+    print list_free_nodes('http://127.0.0.1:7000/', debug = True)['retval']
+    print attach_node_haas_project('http://127.0.0.1:7000/', project = "bmi_infra", node = 'cisco-27', debug = False)
+    print query_project_nodes('http://127.0.0.1:7000/', project = "bmi_infra")
+    print attach_node_to_project_network('http://127.0.0.1:7000/', project = "bmi_infra", node = 'cisco-27', nic = "enp130s0f0", network = "bmi_infra", debug = True)
+
+    print detach_node_from_project_network('http://127.0.0.1:7000/', project = "bmi_infra", node = 'cisco-27', nic = "enp130s0f0", network = "bmi_infra", debug = True)
+    print detach_node_from_project('http://127.0.0.1:7000/', project = "bmi_infra", node = 'cisco-27', debug = False)
+    print query_project_nodes('http://127.0.0.1:7000/', project = "bmi_infra")
