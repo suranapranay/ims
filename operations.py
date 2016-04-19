@@ -7,14 +7,22 @@ import os.path
 import urlparse
 import requests
 import json
-
+import time
 #As of now a shell script that can accomodate rbd map and update.
 #Since there are no python rbd map and updates wrappers around ceph.
 class ShellScriptException(Exception): 
     def __init__(self, message = None, errors = None):
         super(ShellScriptException, self).__init__(message)
+        if not errors:
+            errors = {"status_code" : 999} 
         self.errors = errors   
- 
+
+class HaasException(Exception): 
+    def __init__(self, message = None, errors = None):
+        super(HaasException, self).__init__(message)
+        print errors
+        self.errors = errors
+
 class GlobalConfig(object):
     # once we have a config file going, this object will parse the config file.
     # for the time being we are going to hard code the inits.
@@ -67,19 +75,22 @@ class ResponseException(object):
 # Extend this dict as needed for future expceptions. this
 # ensures readeability and uniformity of errors.
         self.exception_dict = {
-           type(rbd.ImageExists())  : 401,
-           type(CephException()) : 403,
-           type(rbd.ImageBusy()) : 409,
-           type(rbd.ImageHasSnapshots()) : 405,
-           type(rbd.ImageNotFound()) : 404,
-           type(rbd.FunctionNotSupported()) : 410,
-           type(rbd.ArgumentOutOfRange()) : 411,
-           type(ShellScriptException()) : 440,
+           type(rbd.ImageExists())  : 471,
+           type(CephException()) : 472,
+           type(rbd.ImageBusy()) : 473,
+           type(rbd.ImageHasSnapshots()) : 474,
+           type(rbd.ImageNotFound()) : 475,
+           type(rbd.FunctionNotSupported()) : 476,
+           type(rbd.ArgumentOutOfRange()) : 477,
+           type(ShellScriptException()) : 478,
            type(requests.exceptions.ConnectionError()) : 441,
+           type(HaasException()) : self.exception.errors["status_code"], 
                                 }
+           
+          
         #This is to handle key error exception, this also gives us the default error
         self.current_err = self.exception_dict.get(type(e), 500)
-
+        
     def parse_curr_err(self, debug = False):
         if self.current_err != 500:  #check for existing error code in the exception, 
             emsg = self.exception.message
@@ -240,8 +251,11 @@ def resp_parse(obj, resptype = 1):
     elif obj.status_code == 200 and resptype is not 1:
         return {"status_code" : obj.status_code}
 
-    elif obj.status_code != 200:
+    elif obj.status_code != 200 and obj.status_code < 400:
         return {"status_code" : obj.status_code}
+
+    elif obj.status_code > 399:
+        raise HaasException(errors = {"status_code" : obj.status_code})
 
 def list_free_nodes(haas_url, debug = None):
     try:
@@ -263,8 +277,10 @@ def query_project_nodes(haas_url, project):
     c_api = urlparse.urljoin(haas_url, '/project/' + project +  api)
     haas_req = HaasRequest('get', None)
     haas_call_ret = call_haas(c_api, haas_req)
-    return resp_parse(haas_call_ret)   
-
+    try:
+        return resp_parse(haas_call_ret)   
+    except Exception as e:
+        return ResponseException(e).parse_curr_err()
  
 def detach_node_from_project(haas_url, project, node, debug = None):
     api = '/detach_node'
@@ -275,8 +291,11 @@ def detach_node_from_project(haas_url, project, node, debug = None):
     t_ret = call_haas(c_api, haas_req, debug)
     if debug:
         print {"url" : c_api, "node" : node}
-    return resp_parse(t_ret, resptype = 2)
-
+    try:
+        return resp_parse(t_ret, resptype = 2)
+    except Exception as e:
+        return ResponseException(e).parse_curr_err()
+          
 
 def attach_node_to_project_network(haas_url, node, nic,\
         network, channel = "vlan/native",\
@@ -290,7 +309,10 @@ def attach_node_to_project_network(haas_url, node, nic,\
     t_ret= call_haas(c_api, haas_req, debug)
     if debug:
         print {"url" : c_api, "node" : node, "nic" : nic}
-    return resp_parse(t_ret, resptype = 2)
+    try:
+        return resp_parse(t_ret, resptype = 2)
+    except Exception as e:
+        return ResponseException(e).parse_curr_err()
 
 def attach_node_haas_project(haas_url,project,node,\
         debug = None):
@@ -302,10 +324,13 @@ def attach_node_haas_project(haas_url,project,node,\
     t_ret = call_haas(c_api, haas_req, debug)
     if debug:
         print {"url" : c_api, "node" : node}
-    return resp_parse(t_ret, resptype = 2)
+    try:
+        return resp_parse(t_ret, resptype = 2)
+    except Exception as e:
+        return ResponseException(e).parse_curr_err()
 
 def detach_node_from_project_network(haas_url, node,\
-        network, nic = 'enp130s0f0', debug = None,\):
+        network, nic = 'enp130s0f0', debug = None):
     ret_obj = list()
     api = '/node/' + node + '/nic/' + nic + '/detach_network'
     c_api = urlparse.urljoin(haas_url, api)
@@ -314,7 +339,10 @@ def detach_node_from_project_network(haas_url, node,\
     t_ret = call_haas(c_api, haas_req, debug)
     if debug:
         print {"url" : c_api, "node" : node, "nic" : nic}
-    return resp_parse(t_ret, resptype = 2)
+    try:
+        return resp_parse(t_ret, resptype = 2)
+    except Exception as e:
+        return ResponseException(e).parse_curr_err()
 
 def attach_node_to_project_network(haas_url, node, nic,\
         network, channel = "vlan/native", debug = False):
@@ -326,15 +354,31 @@ def attach_node_to_project_network(haas_url, node, nic,\
     t_ret = call_haas(c_api, haas_req, debug)
     if debug:
         print {"url" : c_api, "node" : node, "nic" : nic}
-    return resp_parse(t_ret, resptype = 2)
-
+    try:
+        return resp_parse(t_ret, resptype = 2)
+    except Exception as e:
+        return ResponseException(e).parse_curr_err()
+    
 
 if __name__ == "__main__":
-    print list_free_nodes('http://127.0.0.1:7000/', debug = True)['retval']
-    print attach_node_haas_project('http://127.0.0.1:7000/', project = "bmi_infra", node = 'cisco-27', debug = False)
+    print list_free_nodes('http://127.0.0.1:7000/', debug = False)['retval']
+    time.sleep(5)
+    print attach_node_haas_project('http://127.0.0.1:7000/', "bmi_infra", 'cisco-27', debug = False)
+    print "above is attach node to a proj"
     print query_project_nodes('http://127.0.0.1:7000/', project = "bmi_infra")
-    print attach_node_to_project_network('http://127.0.0.1:7000/', project = "bmi_infra", node = 'cisco-27', nic = "enp130s0f0", network = "bmi_infra", debug = True)
-
-    print detach_node_from_project_network('http://127.0.0.1:7000/', project = "bmi_infra", node = 'cisco-27', nic = "enp130s0f0", network = "bmi_infra", debug = True)
+    time.sleep(5)
+    print attach_node_to_project_network('http://127.0.0.1:7000/', 'cisco-27', "enp130s0f0", "bmi-provision", debug = True)
+    time.sleep(5)
+    print "above is attach network"
+    print detach_node_from_project_network('http://127.0.0.1:7000/','cisco-27', 'bmi-provision' ,"enp130s0f0", debug = True)
+    time.sleep(5)
+    print "above is detach from net"
     print detach_node_from_project('http://127.0.0.1:7000/', project = "bmi_infra", node = 'cisco-27', debug = False)
+    time.sleep(5)
+    print "above is detach from the proj"
     print query_project_nodes('http://127.0.0.1:7000/', project = "bmi_infra")
+    time.sleep(5)
+    try:
+        raise ShellScriptException("lljl")
+    except Exception as e:
+        print ResponseException(e).parse_curr_err()
