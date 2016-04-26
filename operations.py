@@ -5,6 +5,7 @@ import ConfigParser, os
 import subprocess
 import os.path
 import urlparse
+from urlparse import urlsplit
 import requests
 import json
 import time
@@ -14,14 +15,17 @@ class ShellScriptException(Exception):
     def __init__(self, message = None, errors = None):
         super(ShellScriptException, self).__init__(message)
         if not errors:
-            errors = {"status_code" : 999} 
-        self.errors = errors   
-
+            errors = {"status_code" : 999}  # this sets the default and unused error code.
+        self.errors = errors                # we need this because we hash this and refer to error 
+                                            
 class HaasException(Exception): 
     def __init__(self, message = None, errors = None):
         super(HaasException, self).__init__(message)
+        self.errors = errors 
         print errors
-        self.errors = errors
+        if not errors:
+            self.errors = {"status_code" : 999}  # this sets the default and unused error code.
+        self.errors = errors                 
 
 class GlobalConfig(object):
     # once we have a config file going, this object will parse the config file.
@@ -226,22 +230,27 @@ def ret_200(obj):
 ###### haas business #####
 
 class HaasRequest(object):
-    def __init__(self, method, data):
+    def __init__(self, method, data, auth = None):
         self.method = method
         self.data = json.dumps(data)
+        self.auth = None
+        if auth:
+            self.auth = auth 
     def __str__(self):
         return str({"method" : str(self.method),\
-                "data" : self.data})
+                "data" : self.data, "auth" : self.auth})
 
 def call_haas(url, req, debug = False):
     ret = call_haas_inner(url, req)
+    if debug:
+        print req
     return ret
 
 def call_haas_inner(url, req):
     if req.method == 'get':
-        return requests.get(url)
+        return requests.get(url, auth = req.auth)
     if req.method == "post":
-            ret = requests.post(url, data=req.data)
+            ret = requests.post(url, data = req.data, auth = req.auth)
             return ret 
 
 def resp_parse(obj, resptype = 1):
@@ -257,11 +266,11 @@ def resp_parse(obj, resptype = 1):
     elif obj.status_code > 399:
         raise HaasException(errors = {"status_code" : obj.status_code})
 
-def list_free_nodes(haas_url, debug = None):
+def list_free_nodes(haas_url, usr, passwd,  debug = None):
     try:
         api = 'free_nodes'
         c_api = urlparse.urljoin(haas_url, api)
-        haas_req = HaasRequest('get', None)
+        haas_req = HaasRequest('get', None, auth = (usr, passwd))
         if debug:
             print c_api 
         haas_call_ret = call_haas(c_api, haas_req)
@@ -272,22 +281,22 @@ def list_free_nodes(haas_url, debug = None):
 
 
 
-def query_project_nodes(haas_url, project):
+def query_project_nodes(haas_url, project, usr, passwd):
     api = '/nodes'
     c_api = urlparse.urljoin(haas_url, '/project/' + project +  api)
-    haas_req = HaasRequest('get', None)
+    haas_req = HaasRequest('get', None, auth = (usr, passwd))
     haas_call_ret = call_haas(c_api, haas_req)
     try:
         return resp_parse(haas_call_ret)   
     except Exception as e:
         return ResponseException(e).parse_curr_err()
  
-def detach_node_from_project(haas_url, project, node, debug = None):
+def detach_node_from_project(haas_url, project, node, usr, passwd,  debug = None):
     api = '/detach_node'
     c_api = urlparse.urljoin(haas_url, 'project/' + project + api)
     ret_net_obj = str()
     body = {"node" : node}
-    haas_req = HaasRequest('post', body)
+    haas_req = HaasRequest('post', body, auth = (usr, passwd))
     t_ret = call_haas(c_api, haas_req, debug)
     if debug:
         print {"url" : c_api, "node" : node}
@@ -298,14 +307,14 @@ def detach_node_from_project(haas_url, project, node, debug = None):
           
 
 def attach_node_to_project_network(haas_url, node, nic,\
-        network, channel = "vlan/native",\
+        network,usr, passwd, channel = "vlan/native",\
         debug = None):
     ret_obj = list()
     api = '/node/' + node + '/nic/' + nic + '/connect_network'
     c_api = urlparse.urljoin(haas_url, api)
     print c_api
     body = {"network" : network, "channel" : channel}
-    haas_req = HaasRequest('post', body)
+    haas_req = HaasRequest('post', body, auth = (usr, passwd))
     t_ret= call_haas(c_api, haas_req, debug)
     if debug:
         print {"url" : c_api, "node" : node, "nic" : nic}
@@ -315,12 +324,12 @@ def attach_node_to_project_network(haas_url, node, nic,\
         return ResponseException(e).parse_curr_err()
 
 def attach_node_haas_project(haas_url,project,node,\
-        debug = None):
+        usr, passwd, debug = None):
     api = '/connect_node'
     c_api = urlparse.urljoin(haas_url, 'project/' + project + api)
     ret_obj = list()
     body = {"node" : node}
-    haas_req = HaasRequest('post', body)
+    haas_req = HaasRequest('post', body, auth = (usr, passwd))
     t_ret = call_haas(c_api, haas_req, debug)
     if debug:
         print {"url" : c_api, "node" : node}
@@ -330,12 +339,12 @@ def attach_node_haas_project(haas_url,project,node,\
         return ResponseException(e).parse_curr_err()
 
 def detach_node_from_project_network(haas_url, node,\
-        network, nic = 'enp130s0f0', debug = None):
+        network, usr, passwd, nic = 'enp130s0f0', debug = None):
     ret_obj = list()
     api = '/node/' + node + '/nic/' + nic + '/detach_network'
     c_api = urlparse.urljoin(haas_url, api)
     body = {"network" : network}
-    haas_req = HaasRequest('post', body)
+    haas_req = HaasRequest('post', body, auth = (usr, passwd) ) 
     t_ret = call_haas(c_api, haas_req, debug)
     if debug:
         print {"url" : c_api, "node" : node, "nic" : nic}
@@ -345,12 +354,12 @@ def detach_node_from_project_network(haas_url, node,\
         return ResponseException(e).parse_curr_err()
 
 def attach_node_to_project_network(haas_url, node, nic,\
-        network, channel = "vlan/native", debug = False):
+        network,usr, passwd, channel = "vlan/native", debug = False):
     ret_obj = list()
     api = '/node/' + node + '/nic/' + nic + '/connect_network'
     c_api = urlparse.urljoin(haas_url, api)
     body = {"network" : network, "channel" : channel}
-    haas_req = HaasRequest('post', body)
+    haas_req = HaasRequest('post', body, auth = (usr, passwd))
     t_ret = call_haas(c_api, haas_req, debug)
     if debug:
         print {"url" : c_api, "node" : node, "nic" : nic}
@@ -361,24 +370,35 @@ def attach_node_to_project_network(haas_url, node, nic,\
     
 
 if __name__ == "__main__":
-    print list_free_nodes('http://127.0.0.1:7000/', debug = False)['retval']
+    print list_free_nodes('http://127.0.0.1:6500/', "haasadmin", "admin1234",  debug = True)['retval']
     time.sleep(5)
-    print attach_node_haas_project('http://127.0.0.1:7000/', "bmi_infra", 'cisco-27', debug = False)
+
+    print attach_node_haas_project('http://127.0.0.1:6500/', "bmi_penultimate", 'sun-12',\
+            usr = "haasadmin", passwd = "admin1234", debug = True)
     print "above is attach node to a proj"
-    print query_project_nodes('http://127.0.0.1:7000/', project = "bmi_infra")
+    
+    print query_project_nodes('http://127.0.0.1:6500/',  "bmi_penultimate", "haasadmin", "admin1234")
     time.sleep(5)
-    print attach_node_to_project_network('http://127.0.0.1:7000/', 'cisco-27', "enp130s0f0", "bmi-provision", debug = True)
+    '''
+    print attach_node_to_project_network('http://127.0.0.1:7000/', 'cisco-27',\
+            "enp130s0f0", "bmi-provision","test", "test",  debug = True)
     time.sleep(5)
     print "above is attach network"
-    print detach_node_from_project_network('http://127.0.0.1:7000/','cisco-27', 'bmi-provision' ,"enp130s0f0", debug = True)
+
+    print detach_node_from_project_network('http://127.0.0.1:7000/','cisco-27',\
+            'bmi-provision', "test", "test", "enp130s0f0", debug = True)
     time.sleep(5)
+
+    '''
     print "above is detach from net"
-    print detach_node_from_project('http://127.0.0.1:7000/', project = "bmi_infra", node = 'cisco-27', debug = False)
+    print detach_node_from_project('http://127.0.0.1:6500/',\
+              "bmi_penultimate", 'sun-12',  usr = "haasadmin", passwd = "admin1234",  debug = True)
     time.sleep(5)
     print "above is detach from the proj"
-    print query_project_nodes('http://127.0.0.1:7000/', project = "bmi_infra")
+    print query_project_nodes('http://127.0.0.1:6500/', "bmi_penultimate", "haasadmin", "admin1234")
     time.sleep(5)
     try:
         raise ShellScriptException("lljl")
     except Exception as e:
         print ResponseException(e).parse_curr_err()
+    
