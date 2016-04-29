@@ -5,22 +5,25 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import ForeignKey
 from sqlalchemy import Sequence
 from sqlalchemy import Column, Integer, String
- 
-dbpath = '/home/user/ims/bmidb.db' # dunno if we are going to use a config file later.
+
+# dunno if we are going to use a config file later.
+dbpath = '/home/user/ims/bmidb.db'
 Base =  declarative_base()
 
 
 def get_db_classes(Base):
   class Project_BMI(Base):
     __tablename__ = 'proj_to_network'
-    pid = Column(Integer, Sequence('Project_BMI_seq'), primary_key = True) 
+    pid = Column(Integer, Sequence('Project_BMI_seq'),\
+            primary_key = True) 
     project_name = Column(String(15), unique = True) 
     provision_network = Column(String(15))
   
     def __repr__(self):
-      return {"pid" : pid, "project_name" :\
-          project_name, "provision_network" : provision_network}
-  
+      return str({"project_name" :\
+          self.project_name, "provision_network"\
+              : self.provision_network})
+
   class Images(Base):
     __tablename__ = "Images"
     pid = Column(Integer, ForeignKey(Project_BMI.pid))
@@ -78,10 +81,10 @@ def get_image_list_from_db(usr, passwd, project):
   eg, base = create_db_engine(getbase = True) 
   session = get_session(eg)
   Project, Images = get_db_classes(base)
-  image_list = session.query(Project).filter("project_name")
+  image_list = session.query(Project).filter_by(project_name = project)
   return image_list
 
 
 if __name__ == "__main__":
   #test_create() 
-  print get_image_list_from_db("bb","cc","bmi").all() 
+  print get_image_list_from_db("bb","cc","testname").all() 
